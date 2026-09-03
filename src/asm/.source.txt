@@ -12,13 +12,14 @@ start:
     jsr draw_logo
 
     // Execute detection routines
+    jsr detect_sid
     jsr detect_cpu
     jsr detect_gpu
-    jsr detect_sid
     jsr detect_memory
     jsr detect_cartridge
     jsr detect_serial
     jsr detect_tape
+    jsr detect_kernal
 
     // Print fetch output over the logo
     jsr print_info
@@ -85,18 +86,13 @@ mr_loop:
 // ------------------------------------------------------------------------------
 
 // --- CPU Detection ---
+// Based on korbosoft/64Fetch, detect.c lines 149-184.
 detect_cpu:
-    // Default is MOS 6510
-    lda #<str_cpu_6510
-    sta ptr_cpu
-    lda #>str_cpu_6510
-    sta ptr_cpu+1
-
     // Detect 65C816 (SuperCPU)
     lda #$00
     .byte $1a       // INC A on 65C02/65816, NOP on 6502/6510
     cmp #$01
-    bne cpu_is_6510
+    bne cpu_check_base
     
     // Is CMOS, check for 65816
     clc
@@ -118,7 +114,53 @@ cpu_is_65c02:
     sta ptr_cpu
     lda #>str_cpu_65c02
     sta ptr_cpu+1
+    rts
+
+cpu_check_base:
+    // Not CMOS. Check base 6502 family via IO port ($00)
+    lda $00
+    cmp #47         // Standard C64 IO direction
+    bne cpu_is_6502
+    
+    // $00 is 47. Check for Commodore 128 (8502)
+    lda $d030       // C128 clock speed register
+    cmp #255
+    bne cpu_is_8502 // If not 255, it's C128
+    
+    // It's C64 or C64C. Check SID to guess 6510 vs 8500
+    lda ptr_sid
+    cmp #<str_sid_8580
+    bne cpu_is_6510
+    lda ptr_sid+1
+    cmp #>str_sid_8580
+    bne cpu_is_6510
+    
+    // SID is 8580 -> MOS 8500 (C64C)
+    lda #<str_cpu_8500
+    sta ptr_cpu
+    lda #>str_cpu_8500
+    sta ptr_cpu+1
+    rts
+
 cpu_is_6510:
+    lda #<str_cpu_6510
+    sta ptr_cpu
+    lda #>str_cpu_6510
+    sta ptr_cpu+1
+    rts
+
+cpu_is_8502:
+    lda #<str_cpu_8502
+    sta ptr_cpu
+    lda #>str_cpu_8502
+    sta ptr_cpu+1
+    rts
+
+cpu_is_6502:
+    lda #<str_cpu_6502
+    sta ptr_cpu
+    lda #>str_cpu_6502
+    sta ptr_cpu+1
     rts
 
 // --- GPU Detection (VIC-II PAL/NTSC) ---
@@ -348,6 +390,147 @@ tape_no_tape:
 // Print Info layout
 // ------------------------------------------------------------------------------
 
+// --- KERNAL Detection ---
+// Based on korbosoft/64Fetch, detect.c lines 186-200.
+detect_kernal:
+    // Calculate 16-bit checksum of $E000-$FFFF
+    lda #$00
+    sta temp_sum
+    sta temp_sum+1
+    sta $fb
+    lda #$e0
+    sta $fc
+
+    ldy #$00
+kernal_sum_loop:
+    lda ($fb),y
+    clc
+    adc temp_sum
+    sta temp_sum
+    bcc kernal_sum_skip
+    inc temp_sum+1
+kernal_sum_skip:
+    iny
+    bne kernal_sum_loop
+    inc $fc
+    lda $fc
+    cmp #$00        // Wraps from $FF to $00
+    bne kernal_sum_loop
+
+    // Compare temp_sum against known KERNAL checksums
+
+    // C64 KERNAL V3 ($C70A)
+    lda temp_sum+1
+    cmp #$c7
+    bne kernal_check_v2
+    lda temp_sum
+    cmp #$0a
+    bne kernal_check_v2
+    
+    lda #<str_kernal_v3
+    sta ptr_kernal
+    lda #>str_kernal_v3
+    sta ptr_kernal+1
+    rts
+
+kernal_check_v2:
+    // C64 KERNAL V2 ($C70B)
+    lda temp_sum+1
+    cmp #$c7
+    bne kernal_check_v1
+    lda temp_sum
+    cmp #$0b
+    bne kernal_check_v1
+    
+    lda #<str_kernal_v2
+    sta ptr_kernal
+    lda #>str_kernal_v2
+    sta ptr_kernal+1
+    rts
+
+kernal_check_v1:
+    // C64 KERNAL V1 ($D4FD)
+    lda temp_sum+1
+    cmp #$d4
+    bne kernal_check_pet64
+    lda temp_sum
+    cmp #$fd
+    bne kernal_check_pet64
+    
+    lda #<str_kernal_v1
+    sta ptr_kernal
+    lda #>str_kernal_v1
+    sta ptr_kernal+1
+    rts
+
+kernal_check_pet64:
+    // PET64 KERNAL ($C210)
+    lda temp_sum+1
+    cmp #$c2
+    bne kernal_check_unknown
+    lda temp_sum
+    cmp #$10
+    bne kernal_check_unknown
+    
+    lda #<str_kernal_pet64
+    sta ptr_kernal
+    lda #>str_kernal_pet64
+    sta ptr_kernal+1
+    rts
+
+kernal_check_unknown:
+    // Fallthrough to Unknown
+    jmp kernal_unknown
+
+kernal_unknown:
+    // Convert temp_sum (High byte temp_sum+1, Low byte temp_sum) to Hex string in str_kernal_hex
+    lda temp_sum+1
+    lsr
+    lsr
+    lsr
+    lsr
+    jsr hex_to_petscii
+    sta str_kernal_hex+10 // "UNKNOWN ($XXXX)" +10 offset is X1
+
+    lda temp_sum+1
+    and #$0f
+    jsr hex_to_petscii
+    sta str_kernal_hex+11 // X2
+
+    lda temp_sum
+    lsr
+    lsr
+    lsr
+    lsr
+    jsr hex_to_petscii
+    sta str_kernal_hex+12 // X3
+
+    lda temp_sum
+    and #$0f
+    jsr hex_to_petscii
+    sta str_kernal_hex+13 // X4
+
+    lda #<str_kernal_hex
+    sta ptr_kernal
+    lda #>str_kernal_hex
+    sta ptr_kernal+1
+    rts
+
+hex_to_petscii:
+    cmp #$0a
+    bcc hex_is_digit
+    clc
+    adc #55         // 'A' is 65. 10 + 55 = 65.
+    rts
+hex_is_digit:
+    clc
+    adc #48         // '0' is 48.
+    rts
+
+// ------------------------------------------------------------------------------
+// Print Info layout
+// ------------------------------------------------------------------------------
+
 print_info:
     // Go home (top-left)
     lda #19
@@ -380,6 +563,22 @@ print_info:
     lda ptr_cpu
     sta $fb
     lda ptr_cpu+1
+    sta $fc
+    jsr print_string
+    lda #13
+    jsr $ffd2
+
+    // Line 1.5: Kernal
+    ldx #15
+    jsr move_right
+    lda #<str_lbl_kernal
+    sta $fb
+    lda #>str_lbl_kernal
+    sta $fc
+    jsr print_string
+    lda ptr_kernal
+    sta $fb
+    lda ptr_kernal+1
     sta $fc
     jsr print_string
     lda #13
@@ -501,6 +700,8 @@ ptr_serial:     .byte 0, 0
 ptr_tape:       .byte 0, 0
 
 temp_raster:    .byte 0
+temp_sum:       .byte 0, 0
+ptr_kernal:     .byte 0, 0
 serial_count:   .byte 0
 current_device: .byte 0
 
@@ -516,6 +717,8 @@ str_lbl_title:  .text "6502FETCH "
                 .byte 0
 
 str_lbl_cpu:    .text "CPU: "
+                .byte 0
+str_lbl_kernal: .text "KERNAL: "
                 .byte 0
 str_lbl_gpu:    .text "GPU: "
                 .byte 0
@@ -535,6 +738,24 @@ str_cpu_6510:   .text "MOS 6510"
 str_cpu_65c02:  .text "WDC 65C02"
                 .byte 0
 str_cpu_65c816: .text "WDC 65C816 (SUPERCPU)"
+                .byte 0
+
+str_cpu_8502:   .text "MOS 8502"
+                .byte 0
+str_cpu_8500:   .text "MOS 8500"
+                .byte 0
+str_cpu_6502:   .text "MOS 6502"
+                .byte 0
+
+str_kernal_v1:  .text "C64 KERNAL V1"
+                .byte 0
+str_kernal_v2:  .text "C64 KERNAL V2"
+                .byte 0
+str_kernal_v3:  .text "C64 KERNAL V3"
+                .byte 0
+str_kernal_pet64: .text "PET64 KERNAL"
+                .byte 0
+str_kernal_hex: .text "UNKNOWN ($XXXX)"
                 .byte 0
 
 str_gpu_pal:    .text "VIC-II (PAL)"
