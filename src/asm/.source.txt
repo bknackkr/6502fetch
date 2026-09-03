@@ -386,10 +386,6 @@ tape_no_tape:
     sta ptr_tape+1
     rts
 
-// ------------------------------------------------------------------------------
-// Print Info layout
-// ------------------------------------------------------------------------------
-
 // --- KERNAL Detection ---
 // Based on korbosoft/64Fetch, detect.c lines 186-200.
 detect_kernal:
